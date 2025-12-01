@@ -31,6 +31,9 @@ MEMGRAPH_USERNAME = os.environ.get("MEMGRAPH_USERNAME", "memgraph")
 MEMGRAPH_PASSWORD = os.environ.get("MEMGRAPH_PASSWORD", "mem0graph")
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")  # 第三方 API 地址，如 https://api.gptsapi.net/v1
+LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini")  # LLM 模型名称
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small")  # 嵌入模型名称
 HISTORY_DB_PATH = os.environ.get("HISTORY_DB_PATH", "/app/history/history.db")
 
 DEFAULT_CONFIG = {
@@ -50,8 +53,23 @@ DEFAULT_CONFIG = {
         "provider": "neo4j",
         "config": {"url": NEO4J_URI, "username": NEO4J_USERNAME, "password": NEO4J_PASSWORD},
     },
-    "llm": {"provider": "openai", "config": {"api_key": OPENAI_API_KEY, "temperature": 0.2, "model": "gpt-4.1-nano-2025-04-14"}},
-    "embedder": {"provider": "openai", "config": {"api_key": OPENAI_API_KEY, "model": "text-embedding-3-small"}},
+    "llm": {
+        "provider": "openai",
+        "config": {
+            "api_key": OPENAI_API_KEY,
+            "temperature": 0.2,
+            "model": LLM_MODEL,
+            **({"openai_base_url": OPENAI_BASE_URL} if OPENAI_BASE_URL else {}),
+        },
+    },
+    "embedder": {
+        "provider": "openai",
+        "config": {
+            "api_key": OPENAI_API_KEY,
+            "model": EMBEDDING_MODEL,
+            **({"openai_base_url": OPENAI_BASE_URL} if OPENAI_BASE_URL else {}),
+        },
+    },
     "history_db_path": HISTORY_DB_PATH,
 }
 
