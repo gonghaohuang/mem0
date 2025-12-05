@@ -35,6 +35,7 @@ OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")  # 第三方 API 地址，�
 LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini")  # LLM 模型名称
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small")  # 嵌入模型名称
 HISTORY_DB_PATH = os.environ.get("HISTORY_DB_PATH", "/app/history/history.db")
+ENABLE_GRAPH = os.environ.get("ENABLE_GRAPH", "false").lower() == "true"  # 是否启用图数据库，默认关闭，设置为 true 可启用
 
 DEFAULT_CONFIG = {
     "version": "v1.1",
@@ -49,10 +50,11 @@ DEFAULT_CONFIG = {
             "collection_name": POSTGRES_COLLECTION_NAME,
         },
     },
-    "graph_store": {
+    # 图数据库配置 - 可通过 ENABLE_GRAPH 环境变量禁用
+    **({"graph_store": {
         "provider": "neo4j",
         "config": {"url": NEO4J_URI, "username": NEO4J_USERNAME, "password": NEO4J_PASSWORD},
-    },
+    }} if ENABLE_GRAPH else {}),
     "llm": {
         "provider": "openai",
         "config": {
@@ -72,6 +74,8 @@ DEFAULT_CONFIG = {
     },
     "history_db_path": HISTORY_DB_PATH,
 }
+
+logging.info(f"Graph database enabled: {ENABLE_GRAPH}")
 
 
 MEMORY_INSTANCE = Memory.from_config(DEFAULT_CONFIG)

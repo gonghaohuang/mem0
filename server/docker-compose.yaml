@@ -20,10 +20,12 @@ services:
         condition: service_healthy
       neo4j:
         condition: service_healthy
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload  # Enable auto-reload
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --workers 2 --timeout-keep-alive 30
     environment:
       - PYTHONDONTWRITEBYTECODE=1  # Prevents Python from writing .pyc files
       - PYTHONUNBUFFERED=1  # Ensures Python output is sent straight to terminal
+      - MEM0_MAX_WORKERS=4  # Maximum threads for concurrent operations
+      - MEM0_EXECUTOR_TIMEOUT=60  # Timeout for operations in seconds
 
   postgres:
       image: ankane/pgvector:v0.5.1

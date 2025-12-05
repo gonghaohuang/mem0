@@ -1,4 +1,5 @@
 import asyncio
+import atexit
 import concurrent
 import gc
 import hashlib
@@ -15,6 +16,35 @@ import pytz
 from pydantic import ValidationError
 
 from mem0.configs.base import MemoryConfig, MemoryItem
+
+# Global shared ThreadPoolExecutor to prevent thread leakage
+# Limit max workers to prevent excessive thread creation
+_GLOBAL_EXECUTOR = None
+_MAX_WORKERS = int(os.environ.get("MEM0_MAX_WORKERS", "4"))
+_EXECUTOR_TIMEOUT = int(os.environ.get("MEM0_EXECUTOR_TIMEOUT", "60"))  # seconds
+
+
+def _get_executor():
+    """Get or create the global ThreadPoolExecutor."""
+    global _GLOBAL_EXECUTOR
+    if _GLOBAL_EXECUTOR is None or _GLOBAL_EXECUTOR._shutdown:
+        _GLOBAL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+            max_workers=_MAX_WORKERS,
+            thread_name_prefix="mem0_worker"
+        )
+    return _GLOBAL_EXECUTOR
+
+
+def _shutdown_executor():
+    """Shutdown the global executor on exit."""
+    global _GLOBAL_EXECUTOR
+    if _GLOBAL_EXECUTOR is not None:
+        _GLOBAL_EXECUTOR.shutdown(wait=False)
+        _GLOBAL_EXECUTOR = None
+
+
+# Register cleanup on exit
+atexit.register(_shutdown_executor)
 from mem0.configs.enums import MemoryType
 from mem0.configs.prompts import (
     PROCEDURAL_MEMORY_SYSTEM_PROMPT,
@@ -366,14 +396,32 @@ class Memory(MemoryBase):
         else:
             messages = parse_vision_messages(messages)
 
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future1 = executor.submit(self._add_to_vector_store, messages, processed_metadata, effective_filters, infer)
-            future2 = executor.submit(self._add_to_graph, messages, effective_filters)
+        executor = _get_executor()
+        future1 = executor.submit(self._add_to_vector_store, messages, processed_metadata, effective_filters, infer)
+        future2 = executor.submit(self._add_to_graph, messages, effective_filters)
 
-            concurrent.futures.wait([future1, future2])
-
-            vector_store_result = future1.result()
-            graph_result = future2.result()
+        try:
+            # Wait with timeout to prevent infinite blocking
+            done, not_done = concurrent.futures.wait(
+                [future1, future2], 
+                timeout=_EXECUTOR_TIMEOUT
+            )
+            
+            # Cancel any tasks that didn't complete in time
+            for future in not_done:
+                future.cancel()
+                logger.warning("Task timed out and was cancelled")
+            
+            vector_store_result = future1.result(timeout=1) if future1 in done else []
+            graph_result = future2.result(timeout=1) if future2 in done else []
+        except concurrent.futures.TimeoutError:
+            logger.error("Operation timed out")
+            vector_store_result = []
+            graph_result = []
+        except Exception as e:
+            logger.error(f"Error in concurrent execution: {e}")
+            vector_store_result = []
+            graph_result = []
 
         if self.enable_graph:
             return {
@@ -690,18 +738,33 @@ class Memory(MemoryBase):
             "mem0.get_all", self, {"limit": limit, "keys": keys, "encoded_ids": encoded_ids, "sync_type": "sync"}
         )
 
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future_memories = executor.submit(self._get_all_from_vector_store, effective_filters, limit)
-            future_graph_entities = (
-                executor.submit(self.graph.get_all, effective_filters, limit) if self.enable_graph else None
-            )
+        executor = _get_executor()
+        future_memories = executor.submit(self._get_all_from_vector_store, effective_filters, limit)
+        future_graph_entities = (
+            executor.submit(self.graph.get_all, effective_filters, limit) if self.enable_graph else None
+        )
 
-            concurrent.futures.wait(
-                [future_memories, future_graph_entities] if future_graph_entities else [future_memories]
+        futures = [future_memories, future_graph_entities] if future_graph_entities else [future_memories]
+        
+        try:
+            done, not_done = concurrent.futures.wait(futures, timeout=_EXECUTOR_TIMEOUT)
+            
+            for future in not_done:
+                future.cancel()
+                logger.warning("get_all task timed out and was cancelled")
+            
+            all_memories_result = future_memories.result(timeout=1) if future_memories in done else []
+            graph_entities_result = (
+                future_graph_entities.result(timeout=1) if future_graph_entities and future_graph_entities in done else None
             )
-
-            all_memories_result = future_memories.result()
-            graph_entities_result = future_graph_entities.result() if future_graph_entities else None
+        except concurrent.futures.TimeoutError:
+            logger.error("get_all operation timed out")
+            all_memories_result = []
+            graph_entities_result = None
+        except Exception as e:
+            logger.error(f"Error in get_all concurrent execution: {e}")
+            all_memories_result = []
+            graph_entities_result = None
 
         if self.enable_graph:
             return {"results": all_memories_result, "relations": graph_entities_result}
@@ -829,18 +892,33 @@ class Memory(MemoryBase):
             },
         )
 
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future_memories = executor.submit(self._search_vector_store, query, effective_filters, limit, threshold)
-            future_graph_entities = (
-                executor.submit(self.graph.search, query, effective_filters, limit) if self.enable_graph else None
-            )
+        executor = _get_executor()
+        future_memories = executor.submit(self._search_vector_store, query, effective_filters, limit, threshold)
+        future_graph_entities = (
+            executor.submit(self.graph.search, query, effective_filters, limit) if self.enable_graph else None
+        )
 
-            concurrent.futures.wait(
-                [future_memories, future_graph_entities] if future_graph_entities else [future_memories]
+        futures = [future_memories, future_graph_entities] if future_graph_entities else [future_memories]
+        
+        try:
+            done, not_done = concurrent.futures.wait(futures, timeout=_EXECUTOR_TIMEOUT)
+            
+            for future in not_done:
+                future.cancel()
+                logger.warning("search task timed out and was cancelled")
+            
+            original_memories = future_memories.result(timeout=1) if future_memories in done else []
+            graph_entities = (
+                future_graph_entities.result(timeout=1) if future_graph_entities and future_graph_entities in done else None
             )
-
-            original_memories = future_memories.result()
-            graph_entities = future_graph_entities.result() if future_graph_entities else None
+        except concurrent.futures.TimeoutError:
+            logger.error("search operation timed out")
+            original_memories = []
+            graph_entities = None
+        except Exception as e:
+            logger.error(f"Error in search concurrent execution: {e}")
+            original_memories = []
+            graph_entities = None
 
         # Apply reranking if enabled and reranker is available
         if rerank and self.reranker and original_memories:
