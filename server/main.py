@@ -30,12 +30,69 @@ MEMGRAPH_URI = os.environ.get("MEMGRAPH_URI", "bolt://localhost:7687")
 MEMGRAPH_USERNAME = os.environ.get("MEMGRAPH_USERNAME", "memgraph")
 MEMGRAPH_PASSWORD = os.environ.get("MEMGRAPH_PASSWORD", "mem0graph")
 
+# LLM 和 Embedder 提供商配置 (支持: openai, gemini)
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai")
+EMBEDDER_PROVIDER = os.environ.get("EMBEDDER_PROVIDER", "openai")
+
+# OpenAI 配置
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")  # 第三方 API 地址，如 https://api.gptsapi.net/v1
-LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini")  # LLM 模型名称
-EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small")  # 嵌入模型名称
+
+# Google Gemini 配置
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
+
+# 模型名称
+LLM_MODEL = os.environ.get("LLM_MODEL", "gemini-2.0-flash" if LLM_PROVIDER == "gemini" else "gpt-4o-mini")
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "models/text-embedding-004" if EMBEDDER_PROVIDER == "gemini" else "text-embedding-3-small")
+EMBEDDING_DIMS = int(os.environ.get("EMBEDDING_DIMS", "768" if EMBEDDER_PROVIDER == "gemini" else "1536"))
+
 HISTORY_DB_PATH = os.environ.get("HISTORY_DB_PATH", "/app/history/history.db")
 ENABLE_GRAPH = os.environ.get("ENABLE_GRAPH", "false").lower() == "true"  # 是否启用图数据库，默认关闭，设置为 true 可启用
+
+# 构建 LLM 配置
+def _build_llm_config():
+    if LLM_PROVIDER == "gemini":
+        return {
+            "provider": "gemini",
+            "config": {
+                "api_key": GOOGLE_API_KEY,
+                "temperature": 0.2,
+                "model": LLM_MODEL,
+            },
+        }
+    else:  # openai
+        return {
+            "provider": "openai",
+            "config": {
+                "api_key": OPENAI_API_KEY,
+                "temperature": 0.2,
+                "model": LLM_MODEL,
+                **({"openai_base_url": OPENAI_BASE_URL} if OPENAI_BASE_URL else {}),
+            },
+        }
+
+
+# 构建 Embedder 配置
+def _build_embedder_config():
+    if EMBEDDER_PROVIDER == "gemini":
+        return {
+            "provider": "gemini",
+            "config": {
+                "api_key": GOOGLE_API_KEY,
+                "model": EMBEDDING_MODEL,
+                "embedding_dims": EMBEDDING_DIMS,
+            },
+        }
+    else:  # openai
+        return {
+            "provider": "openai",
+            "config": {
+                "api_key": OPENAI_API_KEY,
+                "model": EMBEDDING_MODEL,
+                **({"openai_base_url": OPENAI_BASE_URL} if OPENAI_BASE_URL else {}),
+            },
+        }
+
 
 DEFAULT_CONFIG = {
     "version": "v1.1",
@@ -48,6 +105,7 @@ DEFAULT_CONFIG = {
             "user": POSTGRES_USER,
             "password": POSTGRES_PASSWORD,
             "collection_name": POSTGRES_COLLECTION_NAME,
+            "embedding_model_dims": EMBEDDING_DIMS,
         },
     },
     # 图数据库配置 - 可通过 ENABLE_GRAPH 环境变量禁用
@@ -55,26 +113,13 @@ DEFAULT_CONFIG = {
         "provider": "neo4j",
         "config": {"url": NEO4J_URI, "username": NEO4J_USERNAME, "password": NEO4J_PASSWORD},
     }} if ENABLE_GRAPH else {}),
-    "llm": {
-        "provider": "openai",
-        "config": {
-            "api_key": OPENAI_API_KEY,
-            "temperature": 0.2,
-            "model": LLM_MODEL,
-            **({"openai_base_url": OPENAI_BASE_URL} if OPENAI_BASE_URL else {}),
-        },
-    },
-    "embedder": {
-        "provider": "openai",
-        "config": {
-            "api_key": OPENAI_API_KEY,
-            "model": EMBEDDING_MODEL,
-            **({"openai_base_url": OPENAI_BASE_URL} if OPENAI_BASE_URL else {}),
-        },
-    },
+    "llm": _build_llm_config(),
+    "embedder": _build_embedder_config(),
     "history_db_path": HISTORY_DB_PATH,
 }
 
+logging.info(f"LLM Provider: {LLM_PROVIDER}, Model: {LLM_MODEL}")
+logging.info(f"Embedder Provider: {EMBEDDER_PROVIDER}, Model: {EMBEDDING_MODEL}, Dims: {EMBEDDING_DIMS}")
 logging.info(f"Graph database enabled: {ENABLE_GRAPH}")
 
 
