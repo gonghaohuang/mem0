@@ -290,3 +290,223 @@ def reset_memory():
 def home():
     """Redirect to the OpenAPI documentation."""
     return RedirectResponse(url="/docs")
+
+
+# ==================== MemoryClient 兼容 API ====================
+# 以下路由用于兼容 mem0 MemoryClient 的 API 格式，使 mem0-mcp 可以连接到自托管服务
+
+class MemoryCreateV1(BaseModel):
+    """MemoryClient 格式的请求体"""
+    messages: List[Message] = Field(..., description="List of messages to store.")
+    user_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    app_id: Optional[str] = None
+    run_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    enable_graph: Optional[bool] = False
+    async_mode: Optional[bool] = True
+    output_format: Optional[str] = "v1.1"
+
+
+class SearchRequestV2(BaseModel):
+    """MemoryClient v2 搜索格式"""
+    query: str = Field(..., description="Search query.")
+    filters: Optional[Dict[str, Any]] = None
+    limit: Optional[int] = None
+    enable_graph: Optional[bool] = False
+
+
+class GetMemoriesV2(BaseModel):
+    """MemoryClient v2 获取记忆格式"""
+    filters: Optional[Dict[str, Any]] = None
+    page: Optional[int] = None
+    page_size: Optional[int] = None
+    enable_graph: Optional[bool] = False
+
+
+def _extract_ids_from_filters(filters: Optional[Dict[str, Any]]) -> Dict[str, Optional[str]]:
+    """从 filters 中提取 user_id, agent_id, run_id"""
+    result = {"user_id": None, "agent_id": None, "run_id": None}
+    if not filters:
+        return result
+    
+    # 处理 AND 格式: {"AND": [{"user_id": "xxx"}, ...]}
+    if "AND" in filters:
+        for condition in filters["AND"]:
+            if isinstance(condition, dict):
+                for key in ["user_id", "agent_id", "run_id"]:
+                    if key in condition:
+                        result[key] = condition[key]
+    else:
+        # 直接格式
+        for key in ["user_id", "agent_id", "run_id"]:
+            if key in filters:
+                result[key] = filters[key]
+    
+    return result
+
+
+@app.get("/v1/ping/", summary="Health check for MemoryClient")
+def ping_v1():
+    """MemoryClient 健康检查接口"""
+    return {"status": "ok", "message": "Self-hosted Mem0 server is running"}
+
+
+@app.post("/v1/memories/", summary="Create memories (MemoryClient compatible)")
+def add_memory_v1(memory_create: MemoryCreateV1):
+    """MemoryClient 兼容的添加记忆接口"""
+    if not any([memory_create.user_id, memory_create.agent_id, memory_create.run_id]):
+        raise HTTPException(status_code=400, detail="At least one identifier (user_id, agent_id, run_id) is required.")
+
+    params = {k: v for k, v in memory_create.model_dump().items() 
+              if v is not None and k not in ["messages", "enable_graph", "async_mode", "output_format", "app_id"]}
+    try:
+        response = MEMORY_INSTANCE.add(messages=[m.model_dump() for m in memory_create.messages], **params)
+        return JSONResponse(content=response)
+    except Exception as e:
+        logging.exception("Error in add_memory_v1:")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/v1/memories/{memory_id}/", summary="Get a memory (MemoryClient compatible)")
+def get_memory_v1(memory_id: str):
+    """MemoryClient 兼容的获取单条记忆接口"""
+    try:
+        return MEMORY_INSTANCE.get(memory_id)
+    except Exception as e:
+        logging.exception("Error in get_memory_v1:")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/v1/memories/{memory_id}/", summary="Update a memory (MemoryClient compatible)")
+def update_memory_v1(memory_id: str, updated_memory: Dict[str, Any]):
+    """MemoryClient 兼容的更新记忆接口"""
+    try:
+        text = updated_memory.get("text")
+        if text:
+            return MEMORY_INSTANCE.update(memory_id=memory_id, data=text)
+        return MEMORY_INSTANCE.update(memory_id=memory_id, data=updated_memory)
+    except Exception as e:
+        logging.exception("Error in update_memory_v1:")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/v1/memories/{memory_id}/", summary="Delete a memory (MemoryClient compatible)")
+def delete_memory_v1(memory_id: str):
+    """MemoryClient 兼容的删除单条记忆接口"""
+    try:
+        MEMORY_INSTANCE.delete(memory_id=memory_id)
+        return {"message": "Memory deleted successfully"}
+    except Exception as e:
+        logging.exception("Error in delete_memory_v1:")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/v1/memories/", summary="Delete all memories (MemoryClient compatible)")
+def delete_all_memories_v1(
+    user_id: Optional[str] = None,
+    run_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+):
+    """MemoryClient 兼容的批量删除接口"""
+    if not any([user_id, run_id, agent_id]):
+        raise HTTPException(status_code=400, detail="At least one identifier is required.")
+    try:
+        params = {k: v for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id}.items() if v is not None}
+        MEMORY_INSTANCE.delete_all(**params)
+        return {"message": "All relevant memories deleted"}
+    except Exception as e:
+        logging.exception("Error in delete_all_memories_v1:")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/v1/memories/{memory_id}/history/", summary="Get memory history (MemoryClient compatible)")
+def memory_history_v1(memory_id: str):
+    """MemoryClient 兼容的获取记忆历史接口"""
+    try:
+        return MEMORY_INSTANCE.history(memory_id=memory_id)
+    except Exception as e:
+        logging.exception("Error in memory_history_v1:")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/v1/entities/", summary="List entities (MemoryClient compatible)")
+def list_entities_v1():
+    """MemoryClient 兼容的列出实体接口"""
+    try:
+        # 本地 Memory 类没有 users() 方法，返回空结果
+        return {"results": []}
+    except Exception as e:
+        logging.exception("Error in list_entities_v1:")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/v2/entities/{entity_type}/{entity_name}/", summary="Delete entity (MemoryClient compatible)")
+def delete_entity_v2(entity_type: str, entity_name: str):
+    """MemoryClient 兼容的删除实体接口"""
+    try:
+        params = {}
+        if entity_type == "user":
+            params["user_id"] = entity_name
+        elif entity_type == "agent":
+            params["agent_id"] = entity_name
+        elif entity_type == "run":
+            params["run_id"] = entity_name
+        
+        if params:
+            MEMORY_INSTANCE.delete_all(**params)
+        return {"message": "Entity deleted successfully"}
+    except Exception as e:
+        logging.exception("Error in delete_entity_v2:")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/v2/memories/", summary="Get memories with filters (MemoryClient compatible)")
+def get_memories_v2(
+    request: GetMemoriesV2,
+    page: Optional[int] = None,
+    page_size: Optional[int] = None,
+):
+    """MemoryClient 兼容的获取记忆接口 (v2)"""
+    try:
+        ids = _extract_ids_from_filters(request.filters)
+        if not any(ids.values()):
+            raise HTTPException(status_code=400, detail="At least one identifier is required in filters.")
+        
+        params = {k: v for k, v in ids.items() if v is not None}
+        result = MEMORY_INSTANCE.get_all(**params)
+        
+        # 确保返回格式正确
+        if isinstance(result, dict) and "results" in result:
+            return result
+        return {"results": result if isinstance(result, list) else []}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.exception("Error in get_memories_v2:")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/v2/memories/search/", summary="Search memories (MemoryClient compatible)")
+def search_memories_v2(search_req: SearchRequestV2):
+    """MemoryClient 兼容的搜索接口 (v2)"""
+    try:
+        ids = _extract_ids_from_filters(search_req.filters)
+        if not any(ids.values()):
+            raise HTTPException(status_code=400, detail="At least one identifier is required in filters.")
+        
+        params = {k: v for k, v in ids.items() if v is not None}
+        if search_req.limit:
+            params["limit"] = search_req.limit
+            
+        result = MEMORY_INSTANCE.search(query=search_req.query, **params)
+        
+        # 确保返回格式正确
+        if isinstance(result, dict) and "results" in result:
+            return result
+        return {"results": result if isinstance(result, list) else []}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.exception("Error in search_memories_v2:")
+        raise HTTPException(status_code=500, detail=str(e))
